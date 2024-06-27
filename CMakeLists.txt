@@ -1,0 +1,47 @@
+cmake_minimum_required(VERSION 3.20.0)
+
+option(DEBUG "Debug Mode" ON)
+if(DEBUG)
+    set(CMAKE_BUILD_TYPE "Debug")
+    add_definitions(-DDEBUG_MODE)
+else(DEBUG)
+    set(CMAKE_BUILD_TYPE "Release")
+    add_definitions(-DRELEASE_MODE)
+endif(DEBUG)
+option(BUILD_SHARED_LIB "Build Shared Libraries" OFF)
+if(BUILD_SHARED_LIB)
+    message(FATAL_ERROR "Shared library is NOT supported for Dear ImGui reasons!")
+    set(LIB_TYPE "SHARED")
+else(BUILD_SHARED_LIB)
+    set(LIB_TYPE "STATIC")
+endif(BUILD_SHARED_LIB)
+
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "GLFW lib only" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "GLFW lib only" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "GLFW lib only" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "GLFW lib only" FORCE)
+set(OPM_BUILD_TESTS OFF CACHE BOOL "OPM lib only" FORCE)
+
+set(CMAKE_CXX_STANDARD 17)
+
+project(Divine VERSION 1.0.0 LANGUAGES C CXX)
+
+set(ROOT_DIR ${PROJECT_SOURCE_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${ROOT_DIR}/bin)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${ROOT_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${ROOT_DIR}/lib)
+
+set(CMAKE_MODULE_PATH ${ROOT_DIR}/cmake)
+find_package(VulkanSDK REQUIRED)
+
+add_subdirectory(deps)
+add_subdirectory(base)
+add_subdirectory(src)
+
+if(MSVC)
+    if(${CMAKE_VERSION} VERSION_LESS "3.6.0")
+        message(WARNING "\n\t - CMake version lower than 3.6.0;\n\t - Please update CMake and rerun; OR\n\t - Manually set '${PROJECT_NAME}' as StartUp Project in Visual Studio.\n")
+    else()
+        set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
+    endif()
+endif()

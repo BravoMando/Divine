@@ -1,0 +1,8 @@
+[INFO] [2024/4/11 12:36:48]
+[INFO] Enter program!
+[INFO] Your Info message
+[WARNING] Your Warning message
+[ERROR] Your Error message
+[INFO] [2024/4/11 12:37:05]
+[INFO] Exit program!
+

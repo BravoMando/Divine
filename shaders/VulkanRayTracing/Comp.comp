@@ -1,0 +1,504 @@
+#version 450
+
+#define MAXDISTANCE 10000.0
+#define EPSILON 1e-6    // 0.0
+#define PI 3.1415926535 //PI
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+const int NoneType = -1;
+const int PointLightType = 0;
+const int DirectLightType = 1;
+const int SphereType = 2;
+const int PlaneType = 3;
+const int BoxType = 4;
+const int TorusType = 5;
+const int RingType = 5;
+const int SurfaceType = 5;
+
+struct CameraProperties
+{
+    vec3 Position;
+    float fov;
+    vec3 Up;
+    vec3 Front;
+};
+
+struct SceneDefinition
+{
+    uint PointLightCount;
+    uint DirectLightCount;
+    uint SphereCount;
+    uint PlaneCount;
+
+    uint BoxCount;
+    uint TorusCount;
+    uint RingCount;
+    uint SurfaceCount;
+};
+
+struct SceneProperties
+{
+    uint CanvasWidth;
+    uint CanvasHeight;
+    uint ReflectDepth;
+    float GlobalRefract;
+    vec3 AmbientColor;
+    uint RefractDepth;
+    CameraProperties Camera;
+    mat4 ViewMat;
+    mat4 InverseViewMat;
+    mat4 ProjectionMat;
+    mat4 InverseProjectionMat;
+    SceneDefinition Definitions;
+};
+
+struct PointLight
+{
+    vec4 PositionAndRadius;
+
+    vec3 Color;
+    float Intensity;
+
+    int ID;
+    float LinearK;
+    float QuadraticK;
+
+    vec4 Rotation;
+};
+
+struct DirectLight
+{
+    int ID;
+    vec3 Direction;
+    vec3 Color;
+    float Intensity;
+    vec4 Rotation;
+};
+
+struct Material
+{
+    int ColorTexture;
+    int NormalTexture;
+    float Reflect;
+    float Refract;
+
+    vec3 Color;
+    float Specular;
+};
+
+struct Sphere
+{
+    int ID;
+    bool Hollow;
+
+    vec4 CenterAndRadius;
+    Material Mat;
+    vec4 Rotation;
+};
+
+struct Plane
+{
+    int ID;
+    vec3 Position;
+
+    vec3 Normal;
+
+    Material Mat;
+    vec4 Rotation;
+};
+
+struct Box
+{
+    int ID;
+    vec3 Position;
+
+    vec3 Form; // long, width, height
+
+    Material Mat;
+    vec4 Rotation;
+};
+
+struct Torus
+{
+    int ID;
+    vec3 Position;
+
+    vec2 Form; // r1, r2
+
+    Material Mat;
+    vec4 Rotation;
+};
+
+struct Ring
+{
+    int ID;
+    vec3 Position;
+
+    vec2 Form; // r1 * r1, r2 * r2
+
+    Material Mat;
+    vec4 Rotation;
+};
+
+struct Surface
+{
+    int ID;
+    vec3 Min;
+
+    vec3 Max;
+
+    vec3 Position;
+    float a; // x2 coefficient
+
+    float b; // y2 coefficient
+    float c; // z2 coefficient
+    float d; // z coefficient
+    float e; // y coefficient
+
+    float f; // constance
+
+    Material Mat;
+    vec4 Rotation;
+};
+
+layout(binding = 0) uniform SceneProperty
+{
+    SceneProperties scene;
+};
+
+layout(binding = 1) uniform samplerCube skybox;
+
+layout(std140, binding = 2) buffer PointLights
+{
+    PointLight point_lights[];
+};
+layout (std140, binding = 3) buffer DirectLights
+{
+    DirectLight direct_lights[];
+};
+layout(std140, binding = 4) buffer Spheres
+{
+    Sphere spheres[];
+};
+
+layout(binding = 5, rgba8) uniform writeonly image2D ResultImage;
+
+// Help function
+vec4 quat_conj(vec4 q)
+{
+    return vec4(-q.x, -q.y, -q.z, q.w);
+}
+
+vec4 quat_inv(vec4 q)
+{
+    return quat_conj(q) * (1 / dot(q, q));
+}
+
+vec4 quat_mult(vec4 q1, vec4 q2)
+{
+    vec4 qr;
+    qr.x = (q1.w * q2.x) + (q1.x * q2.w) + (q1.y * q2.z) - (q1.z * q2.y);
+    qr.y = (q1.w * q2.y) - (q1.x * q2.z) + (q1.y * q2.w) + (q1.z * q2.x);
+    qr.z = (q1.w * q2.z) + (q1.x * q2.y) - (q1.y * q2.x) + (q1.z * q2.w);
+    qr.w = (q1.w * q2.w) - (q1.x * q2.x) - (q1.y * q2.y) - (q1.z * q2.z);
+    return qr;
+}
+
+vec3 Rotate(vec4 qr, vec3 v)
+{
+    vec4 qr_conj = quat_conj(qr);
+    vec4 q_pos = vec4(v.xyz, 0);
+    vec4 q_tmp = quat_mult(qr, q_pos);
+    return quat_mult(q_tmp, qr_conj).xyz;
+}
+
+vec4 SphericalTextureMap(in float radius, in vec3 normal, in sampler2D samp)
+{
+    normal = normal / radius;
+    float v = 0.5 - asin(normal.y) / PI;
+    float u = 0.5 + atan(normal.z, normal.x) / (2.0 * PI);
+    return texture(samp, vec2(u, v));
+}
+
+// Point light sphere
+bool PointLightIntersect(in vec3 ro, in vec3 rd, in uint idx, in float Tmin, out float t)
+{
+    PointLight pl = point_lights[idx];
+    vec3 oc = ro - pl.PositionAndRadius.xyz;
+    float a = dot(rd, rd);
+    float half_b = dot(oc, rd);
+    float c = dot(oc, oc) - pl.PositionAndRadius.w * pl.PositionAndRadius.w;
+    float discriminant = half_b * half_b - a * c;
+
+    if (discriminant < EPSILON)
+    {
+        t = -1.0;
+        return false;
+    }
+
+    t = (-half_b - sqrt(discriminant)) / a;
+    return t > EPSILON && t < Tmin;
+}
+
+// Sphere intersect
+bool SphereIntersect(in vec3 ro, in vec3 rd, in uint idx, in float Tmin, out float t)
+{
+    Sphere sphere = spheres[idx];
+    vec3 oc = ro - sphere.CenterAndRadius.xyz;
+    float a = dot(rd, rd);
+    float half_b = dot(oc, rd);
+    float c = dot(oc, oc) - sphere.CenterAndRadius.w * sphere.CenterAndRadius.w;
+    float discriminant = half_b * half_b - a * c;
+
+    if (discriminant < EPSILON)
+    {
+        t = -1.0;
+        return false;
+    }
+
+    t = (-half_b - sqrt(discriminant)) / a;
+    if (sphere.Hollow && t < -EPSILON)
+    {
+        t = (-half_b + sqrt(discriminant)) / a;
+    }
+
+    return t > EPSILON && t < Tmin;
+}
+
+// Sphere shadow
+bool InSphereShadow(in vec3 ro, in vec3 rd, in float dist)
+{
+    float t;
+    for (uint i = 0; i < scene.Definitions.SphereCount; ++i)
+    {
+        if (SphereIntersect(ro, rd, i, dist, t) && abs(spheres[i].Mat.Refract) < EPSILON)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Sphere normal
+vec3 GetSphereNormal(in vec3 pos, in uint idx)
+{
+    Sphere sphere = spheres[idx];
+    return (pos - sphere.CenterAndRadius.xyz) / sphere.CenterAndRadius.w;
+}
+
+float CaculateTmin(in vec3 ro, in vec3 rd, out int num, out int type)
+{
+    float Tmin = MAXDISTANCE;
+    float t;
+    num = -1;
+    type = NoneType;
+
+    for (int i = 0; i < scene.Definitions.SphereCount; ++i)
+    {
+        if (SphereIntersect(ro, rd, i, Tmin, t))
+        {
+            num = i;
+            type = SphereType;
+            Tmin = t;
+        }
+    }
+
+    for (int i = 0; i < scene.Definitions.PointLightCount; ++i)
+    {
+        if (PointLightIntersect(ro, rd, i, Tmin, t))
+        {
+            num = i;
+            type = PointLightType;
+            Tmin = t;
+        }
+    }
+
+    return Tmin;
+}
+
+struct HitPayload
+{
+    Material Mat;
+    vec3 Normal;
+    float Alpha;
+};
+
+HitPayload GetHitPayload(in vec3 ro, in vec3 rd, in vec3 pt, in float t, in int num, in int type)
+{
+    HitPayload hp;
+    if (type == SphereType)
+    {
+        Sphere sphere = spheres[num];
+        hp = HitPayload(sphere.Mat, vec3(pt - sphere.CenterAndRadius.xyz) / sphere.CenterAndRadius.w, 1.0);
+    }
+
+    return hp;
+}
+
+float LightDiffuse(in uint idx, in HitPayload hp, in vec3 lightDir)
+{
+    return clamp(dot(hp.Normal, lightDir), 0.0, 1.0);
+}
+
+float LightSpecular(in uint idx, in HitPayload hp, in vec3 pt, in vec3 lightDir)
+{
+    return pow(clamp(dot(hp.Normal, normalize(lightDir + normalize(scene.Camera.Position - pt))), 0.0, 1.0), hp.Mat.Specular);
+}
+
+float LightDirect(in uint idx, in HitPayload hp, in vec3 pt)
+{
+    return clamp(dot(hp.Normal, normalize(-direct_lights[idx].Direction)), 0.0,1.0);
+}
+
+vec3 RenderScene(in vec3 ro, in vec3 rd)
+{
+    vec3 color = scene.AmbientColor;
+    float t = -1.0;
+    int num = -1;
+    float bounceFactor = 0.8;
+    int type = NoneType;
+    vec3 pt;
+    HitPayload hp;
+
+    for (uint i = 0; i < scene.Definitions.PointLightCount; ++i)
+    {
+        point_lights[i].PositionAndRadius.xyz = Rotate(point_lights[i].Rotation, point_lights[i].PositionAndRadius.xyz);
+    }
+    // for (uint i = 0; i < scene.Definitions.DirectLightCount; ++i)
+    // {
+    //     direct_lights[i].Direction = Rotate(direct_lights[i].Rotation, direct_lights[i].Direction);
+    // }
+
+    // Reflect
+    for (uint i = 0; i < scene.ReflectDepth; ++i)
+    {
+        float tm = CaculateTmin(ro, rd, num, type);
+        if (tm < MAXDISTANCE)
+        {
+            if (type == PointLightType)
+            {
+                color += point_lights[num].Color;
+                break;
+            }
+
+            pt = ro + rd * tm;
+            hp = GetHitPayload(ro, rd, pt, tm, num, type);
+
+            // Refractable
+            if (hp.Mat.Refract > EPSILON)
+            {
+                for (uint j = 0; j < scene.RefractDepth; ++j)
+                {
+                    tm = CaculateTmin(ro, rd, num, type);
+                    hp = GetHitPayload(ro, rd, pt, tm, num, type);
+                    if (tm < MAXDISTANCE && hp.Mat.Refract > EPSILON)
+                    {
+                        pt = ro + rd * tm;
+                        bool front_face = (dot(rd, hp.Normal) < -EPSILON); // dot(rd, hp.Normal) < 0.0
+                        float refractor = front_face ? (scene.GlobalRefract / hp.Mat.Refract) : (hp.Mat.Refract / scene.GlobalRefract);
+                        float cos_theta = min(dot(-rd, hp.Normal), 1.0);
+                        float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+                        if (refractor * sin_theta > 1.0)
+                        {
+                            color *= hp.Mat.Color;
+                            ro = pt;
+                            rd = reflect(rd, front_face ? hp.Normal : -hp.Normal);
+                            break;
+                        }
+                        else
+                        {
+                            color *= hp.Mat.Color;
+                            ro = pt;
+                            rd = refract(rd, front_face ? hp.Normal : -hp.Normal, refractor);
+                        }
+                    }
+                    else if (tm == MAXDISTANCE)
+                    {
+                        color += bounceFactor * texture(skybox, rd).xyz;
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            // Shading
+            if (abs(hp.Mat.Reflect) < EPSILON) // hp.Mat.Reflect == 0.0
+            {
+                for (uint j = 0; j < scene.Definitions.PointLightCount; ++j)
+                {
+                    vec3 rd = point_lights[j].PositionAndRadius.xyz - pt;
+                    float dist = length(rd);
+                    rd = normalize(rd);
+                    if (!InSphereShadow(pt, rd, dist))
+                    {
+                        vec3 lightVec = normalize(point_lights[j].PositionAndRadius.xyz - pt);
+                        color += bounceFactor * (LightDiffuse(j, hp, lightVec) * hp.Mat.Color + LightSpecular(j, hp, pt, lightVec));
+                    }
+                }
+
+                for (uint j = 0; j < scene.Definitions.DirectLightCount; ++j)
+                {
+                    vec3 rd = normalize(-direct_lights[j].Direction);
+                    float dist = MAXDISTANCE;
+                    if (!InSphereShadow(pt, rd, dist))
+                    {
+                        color += bounceFactor * LightDirect(j, hp, pt) * hp.Mat.Color;
+                    }
+                }
+
+                break;
+            }
+            else // hp.Mat.Reflect > 0.0
+            {
+                for (uint j = 0; j < scene.Definitions.PointLightCount; ++j)
+                {
+                    vec3 rd = point_lights[j].PositionAndRadius.xyz - pt;
+                    float dist = length(rd);
+                    rd = normalize(rd);
+                    if (!InSphereShadow(pt, rd, dist))
+                    {
+                        vec3 lightVec = normalize(point_lights[j].PositionAndRadius.xyz - pt);
+                        color += bounceFactor * hp.Mat.Reflect * (LightDiffuse(j, hp, lightVec) * hp.Mat.Color + LightSpecular(j, hp, pt, lightVec));
+                    }
+                }
+
+                for (uint j = 0; j < scene.Definitions.DirectLightCount; ++j)
+                {
+                    vec3 rd = normalize(-direct_lights[j].Direction);
+                    float dist = MAXDISTANCE;
+                    if (!InSphereShadow(pt, rd, dist))
+                    {
+                        color += bounceFactor * hp.Mat.Reflect * LightDirect(j, hp, pt) * hp.Mat.Color;
+                    }
+                }
+                bounceFactor = bounceFactor * (1.0 - bounceFactor);
+
+                ro = pt + hp.Normal * EPSILON;
+                rd = reflect(rd, hp.Normal);
+            }
+        }
+        else
+        {
+            // color += (1 - bounceFactor) * texture(skybox, rd).xyz;
+            color += texture(skybox, rd).xyz;
+            break;
+        }
+    } // Reflect
+
+    color = clamp(color, scene.AmbientColor, vec3(1.0));
+    return color;
+}
+
+void main()
+{
+    ivec2 dim = imageSize(ResultImage);
+    vec2 uv = vec2(gl_GlobalInvocationID.xy) / dim;
+    vec3 ro = scene.Camera.Position;
+    uv = uv * 2.0 - 1.0;
+    vec4 target = scene.InverseProjectionMat * vec4(uv, 1.0, 1.0);
+    vec3 rd = normalize(vec3(scene.InverseViewMat * vec4(normalize(vec3(target) / target.w), 0.0)));
+
+    vec3 finalColor = RenderScene(ro, rd);
+    imageStore(ResultImage, ivec2(gl_GlobalInvocationID.xy), vec4(finalColor, 1.0));
+}

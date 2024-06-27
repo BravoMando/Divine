@@ -1,0 +1,15 @@
+# Divine configuration
+
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+
+[{base,src}*.{h,c,cc,hpp,cpp}]
+indent_style = space
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+indent_size = 4

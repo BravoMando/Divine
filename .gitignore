@@ -1,0 +1,9 @@
+# directories
+.vscode
+build
+bin
+lib
+
+# files
+*.spv
+*.log

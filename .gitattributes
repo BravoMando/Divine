@@ -1,0 +1,44 @@
+* text=auto
+
+# Project file
+*.h text
+*.c text
+*.cc text
+*.hpp text
+*.cpp text
+*.md text
+*.txt text
+*.bat text
+# Shader source file
+*.vert text
+*.tesc text
+*.tese text
+*.geom text
+*.frag text
+*.comp text
+*.mesh text
+*.task text
+*.rgen text
+*.rchit text
+*.rmiss text
+*.rcall text
+*.rahit text
+*.rint text
+*.glsl text
+# Windows project file
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.vcxproj.filters text eol=crlf
+*.natvis text eol=crlf
+# Linux project file
+Makefile text eol=lf
+*.sh text eol=lf
+*.pbxproj text eol=lf
+*.storyboard text eol=lf
+*.plist text eol=lf
+# Binary file
+*.png binary
+*.ttf binary
+*.lib binary
+# LFS file
+res/models/*.obj filter=lfs diff=lfs merge=lfs -text
